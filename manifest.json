@@ -1,0 +1,9 @@
+{
+  "name": "个人饮食与训练管理",
+  "short_name": "Diet App",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#f5f5f5",
+  "theme_color": "#4CAF50",
+  "lang": "zh-CN"
+}
