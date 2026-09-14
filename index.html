@@ -4,6 +4,8 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>饮食记录</title>
+    <link rel="manifest" href="manifest.json">
+    <meta name="theme-color" content="#4CAF50">
     <script src="chart.js"></script>
     <style>
         /* ========== 基础重置 ========== */
@@ -2373,6 +2375,15 @@
         //  启动
         // ============================================
         renderHome();
+    </script>
+
+    <!-- 增强层：训练/休息日目标、身体数据、训练记录、肌酸、备份（不改原有数据结构） -->
+    <script src="upgrade.js"></script>
+    <script>
+        // 注册 Service Worker（PWA 离线支持）
+        if ('serviceWorker' in navigator) {
+            navigator.serviceWorker.register('sw.js').catch(function(){});
+        }
     </script>
 
 </body>
