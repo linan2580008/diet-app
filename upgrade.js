@@ -26,10 +26,10 @@
   }
   function write(k, v) { localStorage.setItem(k, JSON.stringify(v)); }
   // 统一使用本地日期（修复旧版 toISOString 的 UTC 时区 bug）
-  function today() {
-    var d = new Date();
+  function fmtDate(d) {
     return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
   }
+  function today() { return fmtDate(new Date()); }
   function esc(s) {
     return String(s == null ? '' : s).replace(/[&<>"']/g, function (m) {
       return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[m];
@@ -567,6 +567,19 @@
         '<p class="du-muted">仅作记录工具，不构成医疗建议。每天持续摄入比纠结具体时间更重要。</p>' +
       '</div>' +
 
+      '<div class="du-card"><b>导出分析数据（给 AI 分析）</b>' +
+        '<div class="du-pills">' +
+          '<div class="du-pill' + (exportRange === 7 ? ' active' : '') + '" onclick="window.DietUpgrade.setExportRange(7, this)">最近7天</div>' +
+          '<div class="du-pill' + (exportRange === 30 ? ' active' : '') + '" onclick="window.DietUpgrade.setExportRange(30, this)">最近30天</div>' +
+          '<div class="du-pill' + (exportRange === 0 ? ' active' : '') + '" onclick="window.DietUpgrade.setExportRange(0, this)">全部</div>' +
+        '</div>' +
+        '<div class="du-row">' +
+          '<button class="du-btn half" onclick="window.DietUpgrade.exportAnalysisMD()">导出 Markdown 报告</button>' +
+          '<button class="du-btn secondary half" onclick="window.DietUpgrade.exportAnalysisJSON()">导出 JSON</button>' +
+        '</div>' +
+        '<p class="du-muted">Markdown 报告包含每日饮食/体重/训练/肌酸汇总，可直接粘贴给 AI 做周度或月度分析。</p>' +
+      '</div>' +
+
       '<div class="du-card"><b>数据备份</b>' +
         '<div class="du-row">' +
           '<button class="du-btn secondary half" onclick="window.DietUpgrade.exportData()">导出数据 (JSON)</button>' +
@@ -608,6 +621,132 @@
     // 根据当前所在页面刷新
     if (document.getElementById('page-more').classList.contains('active')) renderMore();
     else renderHome();
+  }
+
+  // ---------- 分析数据导出（供 AI 做周/月分析） ----------
+  var exportRange = 7; // 7 | 30 | 0(全部)
+
+  function collectAnalysisData(days) {
+    var start = null;
+    if (days) {
+      var d = new Date(); d.setDate(d.getDate() - (days - 1));
+      start = fmtDate(d);
+    }
+    var inRange = function (date) { return !start || date >= start; };
+
+    var dates = (typeof getAllLogDates === 'function' ? getAllLogDates() : []).filter(inRange).sort();
+    var diet = dates.map(function (d) {
+      var logs = getLogs(d) || [];
+      var totals = logs.reduce(function (a, x) {
+        a.calories += num(x.calories); a.protein += num(x.protein);
+        a.carbs += num(x.carbs); a.fat += num(x.fat);
+        return a;
+      }, { calories: 0, protein: 0, carbs: 0, fat: 0 });
+      return { date: d, totals: totals, meals: logs };
+    });
+
+    var supp = creatineData();
+    return {
+      range: { start: start || '(最早记录)', end: today(), days: days || 'all' },
+      goals: { training: goalsFor('training'), rest: goalsFor('rest') },
+      profile: profile(),
+      diet: diet,
+      bodyData: weightRecords().filter(function (x) { return inRange(x.date); }),
+      workouts: workoutLogs().filter(function (x) { return inRange(x.date); }),
+      creatine: Object.keys(supp).filter(inRange).sort().map(function (k) {
+        return { date: k, dose: (supp[k] && supp[k].dose) || 5 };
+      })
+    };
+  }
+
+  var MEAL_NAMES = { breakfast: '早餐', lunch: '午餐', dinner: '晚餐', snack: '加餐', other: '其他' };
+
+  function buildAnalysisMarkdown(data) {
+    var L = [];
+    var g = data.goals;
+    L.push('# 饮食与训练数据报告');
+    L.push('');
+    L.push('区间：' + data.range.start + ' ~ ' + data.range.end + ' · 导出于 ' + today());
+    L.push('');
+    L.push('## 当前目标');
+    L.push('- 训练日：' + g.training.calories + ' kcal（蛋白质 ' + g.training.protein + 'g / 碳水 ' + g.training.carbs + 'g / 脂肪 ' + g.training.fat + 'g）');
+    L.push('- 休息日：' + g.rest.calories + ' kcal（蛋白质 ' + g.rest.protein + 'g / 碳水 ' + g.rest.carbs + 'g / 脂肪 ' + g.rest.fat + 'g）');
+    L.push('');
+    L.push('## 每日饮食汇总');
+    if (data.diet.length) {
+      L.push('| 日期 | 热量 kcal | 蛋白质 g | 碳水 g | 脂肪 g |');
+      L.push('|---|---|---|---|---|');
+      data.diet.forEach(function (d) {
+        L.push('| ' + d.date + ' | ' + Math.round(d.totals.calories) + ' | ' + d.totals.protein.toFixed(1) + ' | ' + d.totals.carbs.toFixed(1) + ' | ' + d.totals.fat.toFixed(1) + ' |');
+      });
+    } else L.push('（本区间无饮食记录）');
+    L.push('');
+    L.push('## 每日饮食明细');
+    if (data.diet.length) {
+      data.diet.forEach(function (d) {
+        L.push('### ' + d.date + '（' + Math.round(d.totals.calories) + ' kcal）');
+        d.meals.forEach(function (m) {
+          L.push('- ' + (MEAL_NAMES[m.mealType] || '其他') + (m.mealTime ? ' ' + m.mealTime : '') + '｜' + (m.name || '') + ' ' + (m.weight || 0) + 'g · ' + Math.round(num(m.calories)) + ' kcal（蛋 ' + num(m.protein).toFixed(1) + ' / 碳 ' + num(m.carbs).toFixed(1) + ' / 脂 ' + num(m.fat).toFixed(1) + '）');
+        });
+        L.push('');
+      });
+    } else { L.push('（无）'); L.push(''); }
+    L.push('## 体重与腰围');
+    if (data.bodyData.length) {
+      L.push('| 日期 | 体重 kg | 腰围 cm |');
+      L.push('|---|---|---|');
+      data.bodyData.forEach(function (x) {
+        L.push('| ' + x.date + ' | ' + (num(x.weight) || '—') + ' | ' + (num(x.waist) || '—') + ' |');
+      });
+    } else L.push('（本区间无身体数据）');
+    L.push('');
+    L.push('## 训练记录');
+    if (data.workouts.length) {
+      L.push('| 日期 | 类型 | 内容 |');
+      L.push('|---|---|---|');
+      data.workouts.forEach(function (w) {
+        var desc = w.kind === 'cardio'
+          ? [w.duration ? w.duration + 'min' : '', w.distance ? w.distance + 'km' : '', w.heartRate ? '心率' + w.heartRate : '', w.note].filter(Boolean).join(' ')
+          : [w.exercise, w.weight ? w.weight + 'kg' : '', w.reps ? w.reps + '次' : '', w.sets ? w.sets + '组' : '', w.rpe ? 'RPE' + w.rpe : '', w.duration ? w.duration + 'min' : '', w.note].filter(Boolean).join(' ');
+        L.push('| ' + w.date + ' | ' + (w.kind === 'cardio' ? '有氧·' : '力量·') + (w.category || w.type || '') + ' | ' + (desc || '—') + ' |');
+      });
+    } else L.push('（本区间无训练记录）');
+    L.push('');
+    L.push('## 肌酸打卡');
+    L.push(data.creatine.length
+      ? data.creatine.map(function (c) { return c.date + '（' + c.dose + 'g）'; }).join('、') + ' · 共 ' + data.creatine.length + ' 天'
+      : '（本区间无打卡）');
+    L.push('');
+    L.push('---');
+    L.push('请基于以上数据分析：1) 每日热量与蛋白质达标情况；2) 体重/腰围趋势与热量摄入的关系；3) 训练频率与训练表现变化；4) 肌酸执行率；5) 下一阶段（下周/下月）的具体改进建议。');
+    return L.join('\n');
+  }
+
+  function downloadFile(filename, content, mime) {
+    var blob = new Blob([content], { type: mime });
+    var a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = filename;
+    a.click();
+    setTimeout(function () { URL.revokeObjectURL(a.href); }, 1000);
+  }
+
+  function rangeSuffix() { return exportRange ? exportRange + 'd' : 'all'; }
+
+  function exportAnalysisMD() {
+    var data = collectAnalysisData(exportRange);
+    downloadFile('diet-analysis-' + rangeSuffix() + '-' + today() + '.md', '﻿' + buildAnalysisMarkdown(data), 'text/markdown;charset=utf-8');
+  }
+  function exportAnalysisJSON() {
+    var data = collectAnalysisData(exportRange);
+    var out = Object.assign({ app: 'diet-app', type: 'analysis', version: 2, exportedAt: new Date().toISOString() }, data);
+    downloadFile('diet-analysis-' + rangeSuffix() + '-' + today() + '.json', JSON.stringify(out, null, 2), 'application/json');
+  }
+  function setExportRange(r, el) {
+    exportRange = r;
+    var pills = el.parentNode.querySelectorAll('.du-pill');
+    for (var i = 0; i < pills.length; i++) pills[i].classList.remove('active');
+    el.classList.add('active');
   }
 
   // ---------- 备份 / 恢复 ----------
@@ -677,7 +816,8 @@
     setWorkoutKind: setWorkoutKind, addWorkout: addWorkout, delWorkout: delWorkout,
     saveProfile: saveProfile,
     toggleCreatine: toggleCreatine,
-    exportData: exportData, exportCSV: exportCSV, importData: importData
+    exportData: exportData, exportCSV: exportCSV, importData: importData,
+    exportAnalysisMD: exportAnalysisMD, exportAnalysisJSON: exportAnalysisJSON, setExportRange: setExportRange
   };
 
   // ---------- 启动 ----------

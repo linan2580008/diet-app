@@ -279,6 +279,20 @@
             color: #f44336;
         }
 
+        .food-log-edit {
+            color: #ccc;
+            font-size: 15px;
+            cursor: pointer;
+            padding: 4px 6px;
+            border: none;
+            background: none;
+            -webkit-tap-highlight-color: transparent;
+        }
+
+        .food-log-edit:active {
+            color: #4a90d9;
+        }
+
         .empty-msg {
             color: #ccc !important;
             font-size: 14px !important;
@@ -1171,7 +1185,11 @@
             <label>进食时间</label>
             <input type="time" id="meal-time-input">
         </div>
-        <button class="add-confirm-btn" onclick="confirmAddFood()">添加到今日记录</button>
+        <div class="meal-time-group">
+            <label>记录到哪一天（补记可改日期）</label>
+            <input type="date" id="meal-date-input" onchange="updateConfirmBtnText()">
+        </div>
+        <button class="add-confirm-btn" id="add-confirm-btn" onclick="confirmAddFood()">添加到今日记录</button>
     </div>
 
     <!-- 创建新食物面板 -->
@@ -1424,6 +1442,7 @@
                         html += '    <div class="food-log-detail">' + log.weight + 'g · 蛋白质' + log.protein.toFixed(1) + 'g · 碳水' + log.carbs.toFixed(1) + 'g · 脂肪' + log.fat.toFixed(1) + 'g</div>';
                         html += '  </div>';
                         html += '  <span class="food-log-cal">' + Math.round(log.calories) + 'kcal</span>';
+                        html += '  <button class="food-log-edit" onclick="editLog(getToday(), ' + idx + ')">✎</button>';
                         html += '  <button class="food-log-delete" onclick="deleteLog(' + idx + ')">×</button>';
                         html += '</div>';
                     }
@@ -1440,6 +1459,95 @@
             logs.splice(index, 1);
             saveLogs(today, logs);
             renderHome();
+        }
+
+        // 删除任意一天的记录（历史详情页用）
+        function deleteLogFor(date, index) {
+            if (!confirm('确定删除这条记录吗？')) return;
+            var logs = getLogs(date);
+            logs.splice(index, 1);
+            saveLogs(date, logs);
+            if (date === getToday()) renderHome();
+            // 如果历史详情页正在展示，刷新它
+            var detailEl = document.getElementById('history-detail');
+            if (detailEl && detailEl.style.display !== 'none') {
+                showHistoryDetail(date);
+            }
+        }
+
+        // 编辑一条记录：把数据装进添加面板
+        var editContext = null; // { date, index, name, per:{calories,protein,carbs,fat} 每克营养 }
+        function editLog(date, index) {
+            var logs = getLogs(date);
+            var log = logs[index];
+            if (!log) return;
+            var w = log.weight || 1;
+            editContext = {
+                date: date,
+                index: index,
+                name: log.name,
+                per: {
+                    calories: log.calories / w,
+                    protein: log.protein / w,
+                    carbs: log.carbs / w,
+                    fat: log.fat / w
+                }
+            };
+            selectedFood = null; // 编辑模式不走食物库
+
+            document.getElementById('weight-food-name').textContent = log.name;
+            document.getElementById('weight-food-info').textContent = '修改这条记录（重量、餐次、时间、日期都可以改）';
+            document.getElementById('weight-input').value = log.weight;
+            calcNutrition();
+
+            // 餐次
+            var pills = document.querySelectorAll('.meal-pill');
+            for (var i = 0; i < pills.length; i++) {
+                pills[i].classList.remove('active');
+                if (pills[i].getAttribute('data-meal') === (log.mealType || 'other')) {
+                    pills[i].classList.add('active');
+                }
+            }
+            document.getElementById('meal-time-input').value = log.mealTime || '';
+            document.getElementById('meal-date-input').value = date;
+            updateConfirmBtnText();
+
+            document.getElementById('weight-panel').classList.add('active');
+            document.getElementById('weight-backdrop').classList.add('active');
+        }
+
+        // 从历史详情页跳去补记这一天
+        var pendingAddDate = null;
+        function backfillDay(date) {
+            pendingAddDate = date;
+            // 切到添加页
+            var pages = document.querySelectorAll('.page');
+            for (var i = 0; i < pages.length; i++) pages[i].classList.remove('active');
+            document.getElementById('page-add').classList.add('active');
+            document.getElementById('page-title').textContent = '添加食物';
+            var navItems = document.querySelectorAll('.nav-item');
+            for (var i = 0; i < navItems.length; i++) {
+                navItems[i].classList.remove('active');
+                if (navItems[i].getAttribute('data-page') === 'add') navItems[i].classList.add('active');
+            }
+            renderAddPage();
+        }
+
+        // 根据日期/编辑状态更新确认按钮文字
+        function updateConfirmBtnText() {
+            var btn = document.getElementById('add-confirm-btn');
+            if (!btn) return;
+            if (editContext) {
+                btn.textContent = '保存修改';
+                return;
+            }
+            var date = document.getElementById('meal-date-input').value || getToday();
+            if (date === getToday()) {
+                btn.textContent = '添加到今日记录';
+            } else {
+                var parts = date.split('-');
+                btn.textContent = '补记到 ' + parseInt(parts[1]) + '月' + parseInt(parts[2]) + '日';
+            }
         }
 
         // ============================================
@@ -1531,6 +1639,11 @@
             var mm = String(now.getMinutes()).padStart(2, '0');
             document.getElementById('meal-time-input').value = hh + ':' + mm;
 
+            // 设置记录日期（补记入口会预选历史日期）
+            document.getElementById('meal-date-input').value = pendingAddDate || getToday();
+            pendingAddDate = null;
+            updateConfirmBtnText();
+
             // 打开面板
             document.getElementById('weight-panel').classList.add('active');
             document.getElementById('weight-backdrop').classList.add('active');
@@ -1549,12 +1662,21 @@
         function closeWeightPanel() {
             document.getElementById('weight-panel').classList.remove('active');
             document.getElementById('weight-backdrop').classList.remove('active');
+            editContext = null;
         }
 
         // 实时计算营养（用户输入重量时自动触发）
         function calcNutrition() {
-            if (!selectedFood) return;
             var weight = parseFloat(document.getElementById('weight-input').value) || 0;
+            if (editContext) {
+                // 编辑模式：按原记录的每克营养换算
+                document.getElementById('calc-cal').textContent = Math.round(editContext.per.calories * weight * 10) / 10;
+                document.getElementById('calc-protein').textContent = Math.round(editContext.per.protein * weight * 10) / 10;
+                document.getElementById('calc-carbs').textContent = Math.round(editContext.per.carbs * weight * 10) / 10;
+                document.getElementById('calc-fat').textContent = Math.round(editContext.per.fat * weight * 10) / 10;
+                return;
+            }
+            if (!selectedFood) return;
             var ratio = weight / selectedFood.baseWeight;
 
             document.getElementById('calc-cal').textContent = Math.round(selectedFood.calories * ratio * 10) / 10;
@@ -1563,51 +1685,83 @@
             document.getElementById('calc-fat').textContent = Math.round(selectedFood.fat * ratio * 10) / 10;
         }
 
-        // 确认添加食物到今日记录
+        // 确认添加食物到记录（支持补记到任意日期、支持编辑已有记录）
         function confirmAddFood() {
-            if (!selectedFood) return;
-
             var weight = parseFloat(document.getElementById('weight-input').value);
             if (!weight || weight <= 0) {
                 alert('请输入有效的重量');
                 return;
             }
 
-            var ratio = weight / selectedFood.baseWeight;
-            var today = getToday();
-            var logs = getLogs(today);
-
             // 获取选中的餐次
             var activeMealPill = document.querySelector('.meal-pill.active');
             var mealType = activeMealPill ? activeMealPill.getAttribute('data-meal') : 'other';
             var mealTime = document.getElementById('meal-time-input').value || '';
+            var targetDate = document.getElementById('meal-date-input').value || getToday();
 
-            // 创建一条新的饮食记录
-            logs.push({
-                name: selectedFood.name,
-                weight: weight,
-                calories: Math.round(selectedFood.calories * ratio * 10) / 10,
-                protein: Math.round(selectedFood.protein * ratio * 10) / 10,
-                carbs: Math.round(selectedFood.carbs * ratio * 10) / 10,
-                fat: Math.round(selectedFood.fat * ratio * 10) / 10,
-                mealType: mealType,
-                mealTime: mealTime
-            });
+            var entry;
+            if (editContext) {
+                // 编辑模式：按原记录的每克营养重新换算
+                entry = {
+                    name: editContext.name,
+                    weight: weight,
+                    calories: Math.round(editContext.per.calories * weight * 10) / 10,
+                    protein: Math.round(editContext.per.protein * weight * 10) / 10,
+                    carbs: Math.round(editContext.per.carbs * weight * 10) / 10,
+                    fat: Math.round(editContext.per.fat * weight * 10) / 10,
+                    mealType: mealType,
+                    mealTime: mealTime
+                };
+                // 从原日期删除旧记录
+                var oldLogs = getLogs(editContext.date);
+                oldLogs.splice(editContext.index, 1);
+                saveLogs(editContext.date, oldLogs);
+            } else {
+                if (!selectedFood) return;
+                var ratio = weight / selectedFood.baseWeight;
+                entry = {
+                    name: selectedFood.name,
+                    weight: weight,
+                    calories: Math.round(selectedFood.calories * ratio * 10) / 10,
+                    protein: Math.round(selectedFood.protein * ratio * 10) / 10,
+                    carbs: Math.round(selectedFood.carbs * ratio * 10) / 10,
+                    fat: Math.round(selectedFood.fat * ratio * 10) / 10,
+                    mealType: mealType,
+                    mealTime: mealTime
+                };
+            }
 
-            saveLogs(today, logs);
+            var logs = getLogs(targetDate);
+            logs.push(entry);
+            saveLogs(targetDate, logs);
 
             // 关闭面板并刷新首页
             closeWeightPanel();
             renderHome();
 
-            // 切换到首页查看结果
-            var pages = document.querySelectorAll('.page');
-            for (var i = 0; i < pages.length; i++) pages[i].classList.remove('active');
-            document.getElementById('page-home').classList.add('active');
-            document.getElementById('page-title').textContent = '今日饮食';
-            var navItems = document.querySelectorAll('.nav-item');
-            for (var i = 0; i < navItems.length; i++) navItems[i].classList.remove('active');
-            navItems[0].classList.add('active');
+            if (targetDate === getToday()) {
+                // 切换到首页查看结果
+                var pages = document.querySelectorAll('.page');
+                for (var i = 0; i < pages.length; i++) pages[i].classList.remove('active');
+                document.getElementById('page-home').classList.add('active');
+                document.getElementById('page-title').textContent = '今日饮食';
+                var navItems = document.querySelectorAll('.nav-item');
+                for (var i = 0; i < navItems.length; i++) navItems[i].classList.remove('active');
+                navItems[0].classList.add('active');
+            } else {
+                // 补记/改到别的日期：跳到历史页展示那一天
+                var pages = document.querySelectorAll('.page');
+                for (var i = 0; i < pages.length; i++) pages[i].classList.remove('active');
+                document.getElementById('page-history').classList.add('active');
+                document.getElementById('page-title').textContent = '历史记录';
+                var navItems = document.querySelectorAll('.nav-item');
+                for (var i = 0; i < navItems.length; i++) {
+                    navItems[i].classList.remove('active');
+                    if (navItems[i].getAttribute('data-page') === 'history') navItems[i].classList.add('active');
+                }
+                renderHistory();
+                showHistoryDetail(targetDate);
+            }
         }
 
         // ============================================
@@ -1776,7 +1930,7 @@
                 for (var i = 0; i < logs.length; i++) {
                     var meal = logs[i].mealType || 'other';
                     if (!groups[meal]) groups[meal] = [];
-                    groups[meal].push(logs[i]);
+                    groups[meal].push({ index: i, log: logs[i] });
                 }
 
                 var html = '';
@@ -1786,19 +1940,25 @@
                     html += '<div class="meal-section">';
                     html += '  <div class="meal-section-title">' + mealNames[mealKey] + '</div>';
                     for (var j = 0; j < groups[mealKey].length; j++) {
-                        var log = groups[mealKey][j];
+                        var idx = groups[mealKey][j].index;
+                        var log = groups[mealKey][j].log;
                         html += '<div class="food-log-item">';
                         html += '  <div class="food-log-info">';
                         html += '    <div class="food-log-name">' + log.name + '</div>';
                         html += '    <div class="food-log-detail">' + log.weight + 'g · 蛋白质' + log.protein.toFixed(1) + 'g · 碳水' + log.carbs.toFixed(1) + 'g · 脂肪' + log.fat.toFixed(1) + 'g</div>';
                         html += '  </div>';
                         html += '  <span class="food-log-cal">' + Math.round(log.calories) + 'kcal</span>';
+                        html += '  <button class="food-log-edit" onclick="editLog(\'' + date + '\', ' + idx + ')">✎</button>';
+                        html += '  <button class="food-log-delete" onclick="deleteLogFor(\'' + date + '\', ' + idx + ')">×</button>';
                         html += '</div>';
                     }
                     html += '</div>';
                 }
                 foodsEl.innerHTML = html;
             }
+
+            // 底部补记入口
+            foodsEl.innerHTML += '<button class="add-confirm-btn" style="margin-top:16px" onclick="backfillDay(\'' + date + '\')">＋ 补记这一天的食物</button>';
         }
 
         // 返回日期列表
