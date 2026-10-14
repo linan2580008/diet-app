@@ -10,7 +10,8 @@
     weight: 'diet-weight-v1',
     workouts: 'diet-workouts-v1',
     supplements: 'diet-supplements-v1',
-    dayType: 'diet-day-type-v1'
+    dayType: 'diet-day-type-v1',
+    dayStatus: 'diet-daystatus-v1'
   };
 
   var defaultProfile = {
@@ -141,6 +142,80 @@
     return count;
   }
 
+  // ---------- 每日饮食核对状态 ----------
+  // { 'YYYY-MM-DD': 'complete' } —— 只记录「已核对完整」的日期；有日志但未核对的 = 记录中
+  function dayStatus() { return read(KEY.dayStatus, {}); }
+  function todayDietStatus() {
+    var dates = typeof getAllLogDates === 'function' ? getAllLogDates() : [];
+    var t = today();
+    var hasLogs = dates.indexOf(t) !== -1 && (typeof getLogs === 'function' ? (getLogs(t) || []).length > 0 : false);
+    if (dayStatus()[t] === 'complete') return 'complete';
+    return hasLogs ? 'partial' : 'none';
+  }
+  function toggleDayComplete() {
+    var s = dayStatus();
+    var t = today();
+    if (s[t] === 'complete') delete s[t];
+    else s[t] = 'complete';
+    write(KEY.dayStatus, s);
+    refreshHomePanel();
+  }
+
+  // ---------- 训练循环（推 → 拉 → 腿 → 主动恢复） ----------
+  // 循环位置只由真实训练记录决定，不按日历推断：漏记不会自动错位
+  var CYCLE = ['推日', '拉日', '腿日', '主动恢复'];
+  function lastCycleEntry() {
+    var logs = workoutLogs();
+    for (var i = logs.length - 1; i >= 0; i--) {
+      if (logs[i].cycleDay) return logs[i];
+    }
+    return null;
+  }
+  function nextCycleDay() {
+    var last = lastCycleEntry();
+    if (!last) return null; // 还没有循环记录，不臆测
+    var idx = CYCLE.indexOf(last.cycleDay);
+    return idx === -1 ? null : CYCLE[(idx + 1) % CYCLE.length];
+  }
+  // 某一动作最近一次记录
+  function lastExerciseRecord(exercise) {
+    if (!exercise) return null;
+    var logs = workoutLogs();
+    for (var i = logs.length - 1; i >= 0; i--) {
+      if (logs[i].exercise === exercise) return logs[i];
+    }
+    return null;
+  }
+  // 动作进步卡：记录 ≥2 次的动作，对比最近两次重量
+  function exerciseProgress() {
+    var logs = workoutLogs().filter(function (x) { return x.exercise && x.kind !== 'cardio'; });
+    var byEx = {};
+    logs.forEach(function (x) {
+      if (!byEx[x.exercise]) byEx[x.exercise] = [];
+      byEx[x.exercise].push(x);
+    });
+    var rows = [];
+    Object.keys(byEx).forEach(function (ex) {
+      var arr = byEx[ex];
+      if (arr.length < 2) return;
+      var last = arr[arr.length - 1], prev = arr[arr.length - 2];
+      if (!num(last.weight) || !num(prev.weight)) return;
+      var diff = last.weight - prev.weight;
+      rows.push({
+        exercise: ex,
+        text: prev.weight + 'kg → ' + last.weight + 'kg（' + (diff > 0 ? '↑' + diff : diff < 0 ? '↓' + Math.abs(diff) : '→') + '）',
+        last: last
+      });
+    });
+    return rows.reverse().slice(0, 6);
+  }
+
+  // ---------- 刷新首页面板 ----------
+  function refreshHomePanel() {
+    if (typeof renderHome === 'function') renderHome();
+    else renderHomeUpgrade();
+  }
+
   // ---------- 训练 ----------
   function workoutLogs() { return read(KEY.workouts, []); }
   function weekWorkoutStats() {
@@ -149,10 +224,11 @@
     var dow = (d.getDay() + 6) % 7;
     var monday = new Date(d); monday.setDate(d.getDate() - dow);
     var start = monday.getFullYear() + '-' + String(monday.getMonth() + 1).padStart(2, '0') + '-' + String(monday.getDate()).padStart(2, '0');
-    var stats = { strength: 0, cardio: {} };
+    var stats = { strength: 0, cardio: {}, recovery: 0 };
     logs.forEach(function (x) {
       if (x.date < start) return;
       if (x.kind === 'cardio') stats.cardio[x.category] = (stats.cardio[x.category] || 0) + 1;
+      else if (x.kind === 'recovery') stats.recovery++;
       else stats.strength++;
     });
     return stats;
@@ -273,6 +349,10 @@
     var cre = creatineData()[today()];
     var trainedToday = workoutLogs().some(function (x) { return x.date === today(); });
     var isRest = dayType() === 'rest';
+    var dietSt = todayDietStatus();
+    var dietStText = dietSt === 'complete' ? '✓ 已核对完整' : dietSt === 'partial' ? '● 记录中' : '○ 未开始';
+    var nextDay = nextCycleDay();
+    var lastCyc = lastCycleEntry();
 
     box.innerHTML =
       '<div class="du-card">' +
@@ -282,26 +362,131 @@
         '</div>' +
         '<div class="du-muted">今日目标 ' + g.calories + ' kcal · 蛋白质 ' + g.protein + 'g · 碳水 ' + g.carbs + 'g · 脂肪 ' + g.fat + 'g</div>' +
       '</div>' +
+
       '<div class="du-card">' +
-        '<div class="du-grid">' +
-          '<div class="du-metric"><span class="du-muted">当前体重</span><b>' + num(curWeight).toFixed(1) + ' kg</b></div>' +
-          '<div class="du-metric"><span class="du-muted">7日平均</span><b>' + (ws.avg7 ? ws.avg7.toFixed(1) + ' kg' : '数据积累中') + '</b>' +
-            (ws.trendText && ws.avg7 ? '<div class="du-muted">' + esc(ws.trendText) + '</div>' : '') + '</div>' +
-          '<div class="du-metric"><span class="du-muted">腰围</span><b>' + (wst.latest ? wst.latest + ' cm' : '—') + '</b></div>' +
-          '<div class="du-metric"><span class="du-muted">肌酸 / 训练</span><b style="font-size:16px">' +
-            (cre ? '✓ 肌酸' : '○ 肌酸') + ' · ' + (trainedToday ? '✓ 已练' : '○ 未练') + '</b></div>' +
+        // 饮食记录状态
+        '<div style="display:flex;justify-content:space-between;align-items:center">' +
+          '<span>饮食 <b>' + dietStText + '</b></span>' +
+          '<button class="du-btn secondary half" style="width:auto;padding:6px 12px" onclick="window.DietUpgrade.toggleDayComplete()">' +
+            (dietSt === 'complete' ? '取消核对' : '核对完成') + '</button>' +
         '</div>' +
+        // 肌酸打卡（再点即撤销）
+        '<div style="display:flex;justify-content:space-between;align-items:center;margin-top:10px">' +
+          '<span>肌酸 ' + (cre ? '<b>✓ 已打卡 ' + (cre.dose || 5) + 'g</b>' : '<b style="color:#999">○ 未打卡</b>') + '</span>' +
+          '<button class="du-btn secondary half" style="width:auto;padding:6px 12px" onclick="window.DietUpgrade.toggleCreatine()">' +
+            (cre ? '撤销' : '打卡 5g') + '</button>' +
+        '</div>' +
+        // 训练循环状态
+        '<div style="display:flex;justify-content:space-between;align-items:center;margin-top:10px">' +
+          '<span>训练 ' + (trainedToday ? '<b>✓ 已练</b>' : '<b style="color:#999">○ 未练</b>') +
+            (lastCyc ? ' · 下一练 <b>' + esc(nextDay || '—') + '</b>' : '') + '</span>' +
+          '<button class="du-btn secondary half" style="width:auto;padding:6px 12px" onclick="window.DietUpgrade.go(\'workout\')">去记录 ›</button>' +
+        '</div>' +
+        '<div class="du-muted" style="margin-top:8px">体重 <b>' + num(curWeight).toFixed(1) + ' kg</b>' +
+          (ws.avg7 ? ' · 7日均 ' + ws.avg7.toFixed(1) + ' kg ' + esc(ws.trendText) : ' · 7日均 ' + esc(ws.trendText)) +
+          (wst.latest ? ' · 腰 ' + wst.latest + ' cm' : '') + '</div>' +
       '</div>' +
-      '<div class="du-grid4" style="margin:10px 0">' +
+
+      '<div class="du-grid4" style="grid-template-columns:repeat(3,1fr);margin:10px 0">' +
         '<div class="du-quick" onclick="window.DietUpgrade.go(\'add\')"><span>🍚</span>＋食物</div>' +
         '<div class="du-quick" onclick="window.DietUpgrade.go(\'body\')"><span>⚖️</span>＋体重</div>' +
         '<div class="du-quick" onclick="window.DietUpgrade.go(\'workout\')"><span>🏋️</span>＋训练</div>' +
-        '<div class="du-quick" onclick="window.DietUpgrade.toggleCreatine()"><span>💊</span>' + (cre ? '✓ 肌酸' : '＋肌酸') + '</div>' +
       '</div>';
   }
 
   // ---------- 身体数据页 ----------
   var weightChartInst = null, waistChartInst = null;
+
+  // ---------- 周报：基于最近 7 个日历日，缺失日明确标记，不把缺失当 0 ----------
+  function buildWeeklyReport() {
+    var st = dayStatus();
+    var g = goalsFor();
+    var days = [];
+    for (var i = 6; i >= 0; i--) {
+      var d = new Date(); d.setDate(d.getDate() - i);
+      var k = fmtDate(d);
+      var logs = (typeof getLogs === 'function' ? getLogs(k) : []) || [];
+      var totals = logs.reduce(function (a, x) {
+        a.calories += num(x.calories); a.protein += num(x.protein);
+        a.carbs += num(x.carbs); a.fat += num(x.fat);
+        return a;
+      }, { calories: 0, protein: 0, carbs: 0, fat: 0 });
+      days.push({
+        date: k, logs: logs, totals: totals,
+        confirmed: st[k] === 'complete' && logs.length > 0,
+        missing: logs.length === 0
+      });
+    }
+    var withLogs = days.filter(function (x) { return x.logs.length > 0; });
+    var confirmed = days.filter(function (x) { return x.confirmed; });
+    var avg = function (arr, f) {
+      if (!arr.length) return null;
+      return arr.reduce(function (s, x) { return s + num(x.totals[f]); }, 0) / arr.length;
+    };
+    var calHit = confirmed.filter(function (x) {
+      return x.totals.calories >= g.calories * 0.85 && x.totals.calories <= g.calories * 1.1;
+    }).length;
+    var proHit = confirmed.filter(function (x) { return x.totals.protein >= g.protein; }).length;
+
+    // 体重：最近 7 次有效称重 vs 再之前 7 次（明确标注口径）
+    var withW = weightRecords().filter(function (x) { return num(x.weight); });
+    var last7 = withW.slice(-7), prev7 = withW.slice(-14, -7);
+    var wAvg = function (a) { return a.length ? a.reduce(function (s, x) { return s + num(x.weight); }, 0) / a.length : null; };
+
+    var ws = weekWorkoutStats();
+    var cardioMin = workoutLogs().filter(function (x) { return x.kind === 'cardio'; })
+      .reduce(function (s, x) { return s + num(x.duration); }, 0);
+    var cardioKm = workoutLogs().filter(function (x) { return x.kind === 'cardio'; })
+      .reduce(function (s, x) { return s + num(x.distance); }, 0);
+
+    return {
+      days: days, withLogs: withLogs.length, confirmed: confirmed.length,
+      avgCal: avg(confirmed, 'calories'), avgP: avg(confirmed, 'protein'),
+      calHit: calHit, proHit: proHit, goal: g,
+      wLast7: wAvg(last7), wPrev7: wAvg(prev7), wCount: last7.length,
+      waist: waistStats(weightRecords()),
+      strength: ws.strength, cardioCount: Object.keys(ws.cardio).reduce(function (s, k) { return s + ws.cardio[k]; }, 0), recovery: ws.recovery,
+      cardioMin: cardioMin, cardioKm: cardioKm,
+      creatine: creatineWeek()
+    };
+  }
+
+  function weeklyReportHTML() {
+    var r = buildWeeklyReport();
+    var rows = [];
+    rows.push('<div class="du-metric"><span class="du-muted">饮食记录天数</span><b>' + r.withLogs + ' / 7</b>' +
+      '<div class="du-muted">已核对完整 ' + r.confirmed + ' 天</div></div>');
+    if (r.confirmed >= 2) {
+      rows.push('<div class="du-metric"><span class="du-muted">已核对日·平均热量</span><b>' + Math.round(r.avgCal) + ' kcal</b>' +
+        '<div class="du-muted">蛋白质 ' + Math.round(r.avgP) + 'g / 天</div></div>');
+      rows.push('<div class="du-metric"><span class="du-muted">达标率（已核对日）</span><b style="font-size:16px">' +
+        '热量 ' + r.calHit + '/' + r.confirmed + ' · 蛋白质 ' + r.proHit + '/' + r.confirmed + '</b></div>');
+    } else {
+      rows.push('<div class="du-metric"><span class="du-muted">平均热量</span><b>样本不足</b>' +
+        '<div class="du-muted">核对完整 ≥2 天后显示（当前 ' + r.confirmed + ' 天）</div></div>');
+    }
+    if (r.wLast7 != null && r.wPrev7 != null) {
+      var diff = r.wLast7 - r.wPrev7;
+      rows.push('<div class="du-metric"><span class="du-muted">7次称重均值*</span><b>' + r.wLast7.toFixed(1) + ' kg</b>' +
+        '<div class="du-muted">' + (Math.abs(diff) < 0.2 ? '→ 基本稳定' : diff < 0 ? '↓ ' + Math.abs(diff).toFixed(1) : '↑ ' + diff.toFixed(1)) +
+        '（vs 之前7次 ' + r.wPrev7.toFixed(1) + '）</div></div>');
+    } else {
+      rows.push('<div class="du-metric"><span class="du-muted">7次称重均值</span><b>数据积累中</b>' +
+        '<div class="du-muted">* 按最近7次有效称重计算，非自然日</div></div>');
+    }
+    rows.push('<div class="du-metric"><span class="du-muted">腰围</span><b>' + (r.waist.latest ? r.waist.latest + ' cm' : '—') + '</b>' +
+      '<div class="du-muted">' + esc(r.waist.text) + '</div></div>');
+    rows.push('<div class="du-metric"><span class="du-muted">力量训练</span><b>' + r.strength + ' 次</b>' +
+      '<div class="du-muted">有氧 ' + r.cardioCount + ' 次 · 恢复 ' + r.recovery + ' 次</div></div>');
+    rows.push('<div class="du-metric"><span class="du-muted">有氧总量</span><b>' + (r.cardioMin || '—') + (r.cardioMin ? ' 分钟' : '') + '</b>' +
+      (r.cardioKm ? '<div class="du-muted">距离 ' + Math.round(r.cardioKm * 10) / 10 + ' km</div>' : '') + '</div>');
+    rows.push('<div class="du-metric"><span class="du-muted">肌酸打卡</span><b>' + r.creatine + ' / 7</b></div>');
+
+    var missing = r.days.filter(function (x) { return x.missing; }).map(function (x) { return x.date.slice(5); });
+    return '<div class="du-card"><b>本周报告（最近 7 天）</b><div class="du-grid" style="margin-top:8px">' + rows.join('') + '</div>' +
+      (missing.length ? '<p class="du-muted" style="margin-top:8px">缺失日：' + missing.join('、') + '（不计入平均）</p>' : '') +
+      '<p class="du-muted" style="margin-top:4px">结论需要连续数周数据，一两天的波动不代表减脂失败。</p></div>';
+  }
 
   function renderBody() {
     var recs = weightRecords();
@@ -312,6 +497,7 @@
 
     var html =
       '<h2 style="margin-bottom:4px">身体数据</h2>' +
+      weeklyReportHTML() +
       '<div class="du-card"><div class="du-grid">' +
         '<div class="du-metric"><span class="du-muted">当前体重</span><b>' + (latestW ? num(latestW.weight).toFixed(1) : p.weight) + ' kg</b></div>' +
         '<div class="du-metric"><span class="du-muted">7日平均</span><b>' + (ws.avg7 ? ws.avg7.toFixed(1) + ' kg' : '数据积累中') + '</b></div>' +
@@ -447,6 +633,7 @@
   // ---------- 训练页 ----------
   var STRENGTH_CATS = ['胸', '背', '肩', '手臂', '腿', '核心', '综合'];
   var CARDIO_CATS = ['跑步', '游泳', '羽毛球', '骑行', '快走', '爬山', '跳绳', 'HIIT', '瑜伽', '篮球', '足球', '网球', '乒乓球', '拳击', '舞蹈', '划船', '其他'];
+  var RECOVERY_CATS = ['散步', '拉伸', '瑜伽', '轻松骑行', '泡沫轴', '其他'];
   var WORKOUT_EMOJI = {
     '胸': '💪', '背': '🧗', '肩': '🏋️', '手臂': '🦾', '腿': '🦵', '核心': '🧘', '综合': '🤸',
     '跑步': '🏃', '游泳': '🏊', '羽毛球': '🏸', '骑行': '🚴', '快走': '🚶', '爬山': '🥾',
@@ -472,6 +659,22 @@
     if (!sel || !dl) return;
     var list = EXERCISE_DB[sel.value] || [];
     dl.innerHTML = list.map(function (e) { return '<option value="' + e + '">'; }).join('');
+  }
+
+  // 显示某个动作的上次记录
+  function showLastEx() {
+    var input = document.getElementById('du-wex');
+    var box = document.getElementById('du-wlast');
+    if (!input || !box) return;
+    var rec = lastExerciseRecord(input.value.trim());
+    if (!input.value.trim()) { box.style.display = 'none'; return; }
+    if (rec) {
+      box.innerHTML = '上次（' + esc(rec.date) + '）：' +
+        [rec.weight ? rec.weight + 'kg' : '', rec.reps ? '× ' + rec.reps + '次' : '', rec.sets ? '× ' + rec.sets + '组' : '', rec.rpe ? 'RPE ' + rec.rpe : ''].filter(Boolean).join(' ');
+    } else {
+      box.innerHTML = '这个动作还没有历史记录';
+    }
+    box.style.display = 'block';
   }
   function workoutDesc(x) {
     return x.kind === 'cardio'
@@ -508,14 +711,18 @@
     var strengthForm =
       '<div class="du-row"><select id="du-wcat" class="du-input" onchange="window.DietUpgrade.updateExList()">' +
         STRENGTH_CATS.map(function (c) { return '<option>' + c + '</option>'; }).join('') + '</select></div>' +
-      '<div class="du-row"><input id="du-wex" type="text" list="du-exlist" placeholder="动作（下拉选择或直接输入，可留空）">' +
+      '<div class="du-row"><select id="du-wcycle" class="du-input">' +
+        '<option value="">不限定（不推进四日循环）</option>' +
+        CYCLE.map(function (c) { return '<option' + (nextCycleDay() === c ? ' selected' : '') + '>' + c + '</option>'; }).join('') + '</select></div>' +
+      '<div class="du-row"><input id="du-wex" type="text" list="du-exlist" placeholder="动作（下拉选择或直接输入）" oninput="window.DietUpgrade.showLastEx()">' +
       '<datalist id="du-exlist"></datalist></div>' +
+      '<div class="du-muted" id="du-wlast" style="display:none;margin:-4px 0 4px"></div>' +
       '<div class="du-row"><input id="du-wkg" type="number" step="0.5" inputmode="decimal" placeholder="重量 kg">' +
       '<input id="du-wreps" type="number" placeholder="次数">' +
       '<input id="du-wsets" type="number" placeholder="组数"></div>' +
       '<div class="du-row"><input id="du-wrpe" type="number" step="0.5" min="1" max="10" placeholder="RPE (1-10)">' +
       '<input id="du-wdur" type="number" placeholder="时长 分钟"></div>' +
-      '<div class="du-row"><input id="du-wnote" type="text" placeholder="备注（可留空）"></div>';
+      '<div class="du-row"><input id="du-wnote" type="text" placeholder="备注 / 疼痛情况（可留空）"></div>';
 
     var cardioForm =
       '<div class="du-row"><select id="du-wcat" class="du-input">' +
@@ -525,12 +732,23 @@
       '<div class="du-row"><input id="du-whr" type="number" placeholder="平均心率（可选）">' +
       '<input id="du-wnote" type="text" placeholder="备注（可留空）"></div>';
 
+    var recoveryForm =
+      '<div class="du-row"><select id="du-wcat" class="du-input">' +
+        RECOVERY_CATS.map(function (c) { return '<option>' + c + '</option>'; }).join('') + '</select></div>' +
+      '<div class="du-row"><input id="du-wdur" type="number" placeholder="时长 分钟">' +
+      '<input id="du-wnote" type="text" placeholder="备注（可留空）"></div>';
+
     var days = groupWorkoutsByDay(logs).slice(0, 30);
+    var lastCyc = lastCycleEntry();
 
     document.getElementById('du-workout-content').innerHTML =
       '<h2 style="margin-bottom:4px">训练</h2>' +
       '<div class="du-card"><b>本周</b>' +
-        '<p style="margin-top:6px">力量 <b>' + wstats.strength + '</b> 次 · 有氧 ' + esc(cardioSummary) + '</p>' +
+        '<p style="margin-top:6px">力量 <b>' + wstats.strength + '</b> 次 · 有氧 ' + esc(cardioSummary) +
+        (wstats.recovery ? ' · 恢复 ' + wstats.recovery + ' 次' : '') + '</p>' +
+        (lastCyc
+          ? '<p class="du-muted">四日循环（按真实记录推进）：上次 ' + esc(lastCyc.cycleDay) + '（' + esc(lastCyc.date) + '）→ 建议下次 ' + esc(nextCycleDay() || '—') + '</p>'
+          : '<p class="du-muted">四日循环：推日 → 拉日 → 腿日 → 主动恢复。记录时选择循环日即可自动推进，漏记不会错位。</p>') +
         '<p class="du-muted">共 ' + logs.length + ' 次训练记录 · ' + days.length + ' 个训练日</p>' +
       '</div>' +
 
@@ -538,12 +756,20 @@
         '<div class="du-pills">' +
           '<div class="du-pill' + (workoutKind === 'strength' ? ' active' : '') + '" onclick="window.DietUpgrade.setWorkoutKind(\'strength\')">力量训练</div>' +
           '<div class="du-pill' + (workoutKind === 'cardio' ? ' active' : '') + '" onclick="window.DietUpgrade.setWorkoutKind(\'cardio\')">有氧</div>' +
+          '<div class="du-pill' + (workoutKind === 'recovery' ? ' active' : '') + '" onclick="window.DietUpgrade.setWorkoutKind(\'recovery\')">主动恢复</div>' +
         '</div>' +
-        (workoutKind === 'strength' ? strengthForm : cardioForm) +
+        (workoutKind === 'strength' ? strengthForm : workoutKind === 'cardio' ? cardioForm : recoveryForm) +
         '<div class="du-row"><input id="du-wdate" type="date" value="' + formDate + '"></div>' +
         '<button class="du-btn" onclick="window.DietUpgrade.addWorkout()">保存训练</button>' +
-        '<p class="du-muted" style="margin-top:6px">除了类型，其他字段都可以留空。日期默认今天，改日期即可补记之前的训练。</p>' +
+        '<p class="du-muted" style="margin-top:6px">除了类型，其他字段都可以留空。日期默认今天，改日期即可补记之前的训练。休息/跳过不打断循环，下次直接记对应循环日即可。</p>' +
       '</div>' +
+
+      (exerciseProgress().length ?
+        '<div class="du-card"><b>动作进步（最近两次对比）</b><ul class="du-list">' +
+          exerciseProgress().map(function (r) {
+            return '<li><b>' + esc(r.exercise) + '</b>　' + esc(r.text) + '<br><span class="du-muted">' + esc(r.last.date) + '</span></li>';
+          }).join('') +
+        '</ul></div>' : '') +
 
       '<div class="du-card"><b>训练历史（按天归档）</b><ul class="du-list">' +
         (days.map(function (d) {
@@ -607,6 +833,7 @@
       category: document.getElementById('du-wcat').value
     };
     if (workoutKind === 'strength') {
+      rec.cycleDay = document.getElementById('du-wcycle') ? document.getElementById('du-wcycle').value : '';
       rec.exercise = document.getElementById('du-wex').value.trim();
       rec.weight = num(document.getElementById('du-wkg').value) || null;
       rec.reps = num(document.getElementById('du-wreps').value) || null;
@@ -614,10 +841,14 @@
       rec.rpe = num(document.getElementById('du-wrpe').value) || null;
       rec.duration = num(document.getElementById('du-wdur').value) || null;
       rec.note = document.getElementById('du-wnote').value.trim();
-    } else {
+    } else if (workoutKind === 'cardio') {
       rec.duration = num(document.getElementById('du-wdur').value) || null;
       rec.distance = num(document.getElementById('du-wdist').value) || null;
       rec.heartRate = num(document.getElementById('du-whr').value) || null;
+      rec.note = document.getElementById('du-wnote').value.trim();
+    } else {
+      // 主动恢复
+      rec.duration = num(document.getElementById('du-wdur').value) || null;
       rec.note = document.getElementById('du-wnote').value.trim();
     }
     logs.push(rec);
@@ -625,6 +856,7 @@
     // 补记到别的日期时，直接展示那一天的归档
     workoutDayView = (rec.date !== today()) ? rec.date : null;
     renderWorkout();
+    refreshHomePanel(); // 首页训练/循环状态同步
   }
   function delWorkout(idx) {
     if (!confirm('删除这条训练记录？')) return;
@@ -652,7 +884,16 @@
         '<div class="du-row"><span class="du-muted" style="width:90px">蛋白质</span><input id="du-protein" type="number" value="' + p.protein + '" placeholder="g"></div>' +
         '<div class="du-row"><span class="du-muted" style="width:90px">脂肪</span><input id="du-fat" type="number" value="' + p.fat + '" placeholder="g"></div>' +
         '<button class="du-btn" onclick="window.DietUpgrade.saveProfile()">保存目标</button>' +
-        '<p class="du-muted" style="margin-top:6px">碳水会按「热量 − 蛋白质 − 脂肪」自动计算。切换训练日/休息日后，首页目标随之变化。</p>' +
+        '<p class="du-muted" style="margin-top:6px">碳水会按「热量 − 蛋白质 − 脂肪」自动计算（蛋白质 4 kcal/g · 碳水 4 kcal/g · 脂肪 9 kcal/g）。切换训练日/休息日后，首页目标随之变化。</p>' +
+        (function () {
+          var autoT = Math.max(0, Math.round((p.trainingCal - p.protein * 4 - p.fat * 9) / 4));
+          var autoR = Math.max(0, Math.round((p.restCal - p.protein * 4 - p.fat * 9) / 4));
+          if (Math.abs(autoT - p.carbsTraining) > 10 || Math.abs(autoR - p.carbsRest) > 10) {
+            return '<p class="du-muted" style="margin-top:8px;color:#b45309">当前碳水目标（' + p.carbsTraining + '/' + p.carbsRest + 'g）与 4/4/9 换算值（' + autoT + '/' + autoR + 'g）不一致。' +
+              '<button class="du-btn secondary" style="margin-top:4px;padding:6px 10px" onclick="window.DietUpgrade.applyCarbsCalibration()">应用换算值</button></p>';
+          }
+          return '';
+        })() +
       '</div>' +
 
       '<div class="du-card"><b>肌酸</b>' +
@@ -680,8 +921,13 @@
           '<button class="du-btn secondary half" onclick="window.DietUpgrade.exportData()">导出数据 (JSON)</button>' +
           '<button class="du-btn secondary half" onclick="window.DietUpgrade.exportCSV()">导出饮食 CSV</button>' +
         '</div>' +
+        '<div class="du-row"><select id="du-import-mode" class="du-input">' +
+          '<option value="restore">完整恢复（覆盖本机全部数据）</option>' +
+          '<option value="merge">合并导入（自动去重，目标保留本机）</option>' +
+        '</select></div>' +
         '<label class="du-muted" for="du-import">导入数据（选择之前导出的 JSON 备份文件）：</label>' +
         '<input id="du-import" type="file" accept=".json" class="du-input" onchange="window.DietUpgrade.importData(event)">' +
+        '<p class="du-muted">恢复会先自动下载当前备份；合并导入会跳过重复记录，失败时不会改动现有数据。</p>' +
       '</div>' +
 
       '<div class="du-tip">本工具只做记录与统计：热量缺口用于减脂，蛋白质 + 力量训练 + 恢复用于保肌。智能分析在下一阶段加入。</div>';
@@ -700,6 +946,11 @@
     if (typeof renderHome === 'function') renderHome();
     alert('目标已保存');
     renderMore();
+  }
+
+  // 碳水目标按 4/4/9 换算校准（用户手动点击，不自动覆盖）
+  function applyCarbsCalibration() {
+    saveProfile();
   }
 
   function setDayType(v) {
@@ -881,26 +1132,137 @@
   function importData(e) {
     var file = e.target.files[0];
     if (!file) return;
+    var mode = document.getElementById('du-import-mode') ? document.getElementById('du-import-mode').value : 'restore';
     var reader = new FileReader();
     reader.onload = function () {
+      var data;
       try {
-        var data = JSON.parse(reader.result);
-        if (!data.localStorage) throw new Error('文件格式不正确（缺少 localStorage 字段）');
-        if (!confirm('导入数据会覆盖当前浏览器中的全部数据，是否继续？')) return;
-        if (confirm('建议先备份当前数据。点击「确定」先下载一份当前备份，再执行导入；点击「取消」直接导入。')) {
-          exportData();
+        data = JSON.parse(reader.result);
+      } catch (err) {
+        alert('导入失败：文件不是有效的 JSON，当前数据未做任何修改。');
+        return;
+      }
+      // 格式校验：任何一步失败都零写入
+      if (data.app !== 'diet-app' || !data.localStorage || typeof data.localStorage !== 'object') {
+        alert('导入失败：不是本应用导出的备份文件（缺少 app/localStorage 标识），当前数据未做任何修改。');
+        return;
+      }
+      var keys = Object.keys(data.localStorage);
+      if (!keys.length) {
+        alert('导入失败：备份文件中没有数据，当前数据未做任何修改。');
+        return;
+      }
+      try {
+        if (mode === 'merge') {
+          var summary = mergeBackup(data.localStorage);
+          alert('合并导入完成：\n' + summary.join('\n'));
+          location.reload();
+          return;
         }
-        Object.keys(data.localStorage).forEach(function (k) {
-          localStorage.setItem(k, data.localStorage[k]);
-        });
-        alert('导入完成，页面即将刷新');
+        // 完整恢复
+        if (!confirm('完整恢复将用备份覆盖本机全部数据（' + keys.length + ' 个数据项）。\n\n系统会先自动下载一份当前数据的备份。\n\n是否继续？')) return;
+        exportData(); // 先备份当前数据
+        // 只清理本应用的数据（diet-* 前缀），不动其他网站数据
+        var toRemove = [];
+        for (var i = 0; i < localStorage.length; i++) {
+          var k = localStorage.key(i);
+          if (k && k.indexOf('diet-') === 0) toRemove.push(k);
+        }
+        toRemove.forEach(function (k) { localStorage.removeItem(k); });
+        keys.forEach(function (k) { localStorage.setItem(k, data.localStorage[k]); });
+        alert('恢复完成，页面即将刷新');
         location.reload();
       } catch (err) {
-        alert('导入失败：' + err.message);
+        alert('导入失败：' + err.message + '\n当前数据未被修改。');
       }
     };
     reader.readAsText(file);
     e.target.value = '';
+  }
+
+  // 合并导入：与现有数据合并，按规则去重；目标和日类型保留本机
+  function mergeBackup(back) {
+    var summary = [];
+    function parse(k, fb) { try { return JSON.parse(back[k]); } catch (e) { return fb; } }
+
+    // 食物：按名称去重，本机已有同名食物保留
+    if (back['diet-foods']) {
+      var curFoods = typeof getFoods === 'function' ? getFoods() : [];
+      var names = {};
+      curFoods.forEach(function (f) { names[f.name] = 1; });
+      var incoming = parse('diet-foods', []);
+      var added = 0;
+      incoming.forEach(function (f) {
+        if (f && f.name && !names[f.name]) {
+          f.id = Date.now() + added;
+          curFoods.push(f);
+          names[f.name] = 1;
+          added++;
+        }
+      });
+      if (typeof saveFoods === 'function') saveFoods(curFoods);
+      summary.push('食物库：新增 ' + added + ' 个（重名 ' + (incoming.length - added) + ' 个已跳过）');
+    }
+
+    // 饮食记录：按天合并，同（名称+重量+热量+餐次）视为重复
+    Object.keys(back).forEach(function (k) {
+      if (k.indexOf('diet-log-') !== 0) return;
+      var date = k.slice('diet-log-'.length);
+      var inc = parse(k, []);
+      if (!Array.isArray(inc) || !inc.length) return;
+      var cur = (typeof getLogs === 'function' ? getLogs(date) : []) || [];
+      var sig = {};
+      cur.forEach(function (x) { sig[(x.name || '') + '|' + (x.weight || 0) + '|' + (x.calories || 0) + '|' + (x.mealType || '')] = 1; });
+      var added = 0;
+      inc.forEach(function (x) {
+        var s = (x.name || '') + '|' + (x.weight || 0) + '|' + (x.calories || 0) + '|' + (x.mealType || '');
+        if (!sig[s]) { cur.push(x); sig[s] = 1; added++; }
+      });
+      if (added && typeof saveLogs === 'function') { saveLogs(date, cur); summary.push('饮食 ' + date + '：合并 ' + added + ' 条'); }
+    });
+
+    // 体重：按日期合并，本机已有该日期则保留
+    if (back['diet-weight-v1']) {
+      var curW = read(KEY.weight, []);
+      var dates = {};
+      curW.forEach(function (x) { dates[x.date] = 1; });
+      var addedW = 0;
+      parse('diet-weight-v1', []).forEach(function (x) {
+        if (x && x.date && !dates[x.date]) { curW.push(x); dates[x.date] = 1; addedW++; }
+      });
+      curW.sort(function (a, b) { return a.date.localeCompare(b.date); });
+      write(KEY.weight, curW);
+      summary.push('体重记录：合并 ' + addedW + ' 天');
+    }
+
+    // 训练：按（日期+类型+部位+动作）去重
+    if (back['diet-workouts-v1']) {
+      var curWo = read(KEY.workouts, []);
+      var sigs = {};
+      curWo.forEach(function (x) { sigs[[x.date, x.kind, x.category, x.exercise || ''].join('|')] = 1; });
+      var addedWo = 0;
+      parse('diet-workouts-v1', []).forEach(function (x) {
+        var s = [x.date, x.kind, x.category, x.exercise || ''].join('|');
+        if (!sigs[s]) { curWo.push(x); sigs[s] = 1; addedWo++; }
+      });
+      write(KEY.workouts, curWo);
+      summary.push('训练记录：合并 ' + addedWo + ' 条');
+    }
+
+    // 肌酸 / 每日核对：并集，本机已有保留
+    ['diet-supplements-v1', 'diet-daystatus-v1'].forEach(function (k) {
+      if (!back[k]) return;
+      var cur = read(k, {});
+      var addedC = 0;
+      Object.keys(parse(k, {})).forEach(function (d) {
+        if (!cur[d]) { cur[d] = parse(k, {})[d]; addedC++; }
+      });
+      write(k, cur);
+      summary.push(k.indexOf('supplement') !== -1 ? '肌酸打卡：合并 ' + addedC + ' 天' : '每日核对状态：合并 ' + addedC + ' 天');
+    });
+
+    summary.push('目标设置与日类型：保留本机，未合并');
+    return summary;
   }
 
   // ---------- 对外接口 ----------
@@ -908,10 +1270,10 @@
     go: duSwitch,
     setDayType: setDayType,
     addBody: addBody, editBody: editBody, delBody: delBody,
-    setWorkoutKind: setWorkoutKind, addWorkout: addWorkout, delWorkout: delWorkout, updateExList: updateExList,
+    setWorkoutKind: setWorkoutKind, addWorkout: addWorkout, delWorkout: delWorkout, updateExList: updateExList, showLastEx: showLastEx,
     openWorkoutDay: openWorkoutDay, backToWorkoutDays: backToWorkoutDays, backfillWorkoutDay: backfillWorkoutDay,
-    saveProfile: saveProfile,
-    toggleCreatine: toggleCreatine,
+    saveProfile: saveProfile, applyCarbsCalibration: applyCarbsCalibration,
+    toggleCreatine: toggleCreatine, toggleDayComplete: toggleDayComplete,
     exportData: exportData, exportCSV: exportCSV, importData: importData,
     exportAnalysisMD: exportAnalysisMD, exportAnalysisJSON: exportAnalysisJSON, setExportRange: setExportRange
   };

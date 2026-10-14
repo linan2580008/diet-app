@@ -293,6 +293,32 @@
             color: #4a90d9;
         }
 
+        /* 快速录入 chips */
+        .quick-section { margin-bottom: 12px; }
+        .quick-title { font-size: 13px; color: #888; margin-bottom: 6px; }
+        .quick-chips { display: flex; flex-wrap: wrap; gap: 8px; }
+        .quick-chip {
+            background: #f0f7ff; color: #2b6cb0; border: 1px solid #d6e6f7;
+            border-radius: 16px; padding: 7px 12px; font-size: 14px; cursor: pointer;
+            -webkit-tap-highlight-color: transparent;
+        }
+        .quick-chip:active { background: #dcebfb; }
+
+        /* 收藏星 */
+        .fav-star { color: #ddd; font-size: 18px; padding: 4px 2px 4px 8px; cursor: pointer; -webkit-tap-highlight-color: transparent; }
+        .fav-star.on { color: #f5a623; }
+
+        /* 撤销条 */
+        #undo-bar {
+            display: none; align-items: center; justify-content: space-between;
+            background: #323232; color: #fff; border-radius: 10px;
+            padding: 10px 14px; margin-bottom: 10px; font-size: 14px;
+        }
+        #undo-bar button {
+            background: none; border: none; color: #7ec8ff; font-size: 14px;
+            font-weight: 600; padding: 2px 6px; cursor: pointer;
+        }
+
         .empty-msg {
             color: #ccc !important;
             font-size: 14px !important;
@@ -1049,6 +1075,7 @@
                     <button class="meal-pill" id="add-mode-quick" onclick="switchAddMode('quick')">✍️ 手动输入</button>
                 </div>
                 <div id="library-add-panel">
+                    <div id="undo-bar"></div>
                     <div class="search-box">
                         <input type="text" id="add-search" placeholder="搜索食物..." oninput="renderAddPage()">
                     </div>
@@ -1242,7 +1269,7 @@
             <span class="weight-panel-title">创建新食物</span>
             <button class="weight-panel-close" onclick="closeCreatePanel()">×</button>
         </div>
-        <div class="weight-panel-info">录入每基准重量的营养信息（可从食品包装或网上查询）</div>
+        <div class="weight-panel-info">录入「每基准重量」的营养信息（如按每100g，参考包装营养成分表），之后按实际重量自动换算</div>
 
         <div class="create-form">
             <div class="emoji-name-row">
@@ -1683,6 +1710,50 @@
         }
 
 
+        // ---------- 快速录入：收藏 / 最近吃过 / 上次克重 ----------
+        function getLastWeights() {
+            try { return JSON.parse(localStorage.getItem('diet-lastweight-v1') || '{}'); } catch (e) { return {}; }
+        }
+        function saveLastWeight(name, weight) {
+            var w = getLastWeights();
+            w[name] = weight;
+            localStorage.setItem('diet-lastweight-v1', JSON.stringify(w));
+        }
+
+        // 收藏/取消收藏
+        function toggleFav(id, ev) {
+            if (ev) ev.stopPropagation();
+            var foods = getFoods();
+            for (var i = 0; i < foods.length; i++) {
+                if (foods[i].id === id) { foods[i].fav = !foods[i].fav; break; }
+            }
+            saveFoods(foods);
+            renderAddPage();
+            if (document.getElementById('page-foods').classList.contains('active')) renderFoodsPage();
+        }
+
+        // 最近吃过的食物（按最近使用排序，取仍在食物库中的前 8 个）
+        function getRecentFoods() {
+            var dates = getAllLogDates().slice(-30);
+            var seen = {};
+            var order = [];
+            for (var i = dates.length - 1; i >= 0; i--) {
+                var logs = getLogs(dates[i]);
+                for (var j = logs.length - 1; j >= 0; j--) {
+                    var n = logs[j].name;
+                    if (n && !seen[n]) { seen[n] = 1; order.push(n); }
+                }
+            }
+            var foods = getFoods();
+            var byName = {};
+            for (var k = 0; k < foods.length; k++) byName[foods[k].name] = foods[k];
+            var out = [];
+            for (var m = 0; m < order.length && out.length < 8; m++) {
+                if (byName[order[m]]) out.push(byName[order[m]]);
+            }
+            return out;
+        }
+
         // 渲染添加页的食物列表
         function renderAddPage() {
             var foods = getFoods();
@@ -1696,10 +1767,31 @@
             }
 
             var listEl = document.getElementById('add-food-list');
+            var html = '';
+
+            // 无搜索词时显示快捷区：⭐ 常用 + 🕘 最近吃过
+            if (!keyword) {
+                var favs = foods.filter(function (f) { return f.fav; });
+                var recent = getRecentFoods();
+                if (favs.length) {
+                    html += '<div class="quick-section"><div class="quick-title">⭐ 常用</div><div class="quick-chips">';
+                    for (var a = 0; a < favs.length; a++) {
+                        html += '<span class="quick-chip" onclick="selectFood(' + favs[a].id + ')">' + (favs[a].emoji || '') + ' ' + favs[a].name + '</span>';
+                    }
+                    html += '</div></div>';
+                }
+                if (recent.length) {
+                    html += '<div class="quick-section"><div class="quick-title">🕘 最近吃过</div><div class="quick-chips">';
+                    for (var b = 0; b < recent.length; b++) {
+                        html += '<span class="quick-chip" onclick="selectFood(' + recent[b].id + ')">' + (recent[b].emoji || '') + ' ' + recent[b].name + '</span>';
+                    }
+                    html += '</div></div>';
+                }
+            }
+
             if (foods.length === 0) {
-                listEl.innerHTML = '<p class="empty-msg">没有找到食物</p>';
+                html += '<p class="empty-msg">没有找到食物</p>';
             } else {
-                var html = '';
                 for (var i = 0; i < foods.length; i++) {
                     var f = foods[i];
                     html += '<div class="add-food-item" onclick="selectFood(' + f.id + ')">';
@@ -1711,10 +1803,11 @@
                     html += '    <div class="add-food-detail">每' + f.baseWeight + 'g: 蛋白质' + f.protein + 'g · 碳水' + f.carbs + 'g · 脂肪' + f.fat + 'g</div>';
                     html += '  </div>';
                     html += '  <span class="add-food-cal">' + f.calories + ' kcal</span>';
+                    html += '  <span class="fav-star' + (f.fav ? ' on' : '') + '" onclick="toggleFav(' + f.id + ', event)">' + (f.fav ? '★' : '☆') + '</span>';
                     html += '</div>';
                 }
-                listEl.innerHTML = html;
             }
+            listEl.innerHTML = html;
         }
 
         // 点击食物 → 打开重量输入面板
@@ -1738,12 +1831,14 @@
                 '碳水' + selectedFood.carbs + 'g · ' +
                 '脂肪' + selectedFood.fat + 'g';
 
-            // 清空重量输入，重置计算
-            document.getElementById('weight-input').value = '';
+            // 清空重量输入，重置计算；若上次用过则自动带出上次克重
+            var lastW = getLastWeights()[selectedFood.name];
+            document.getElementById('weight-input').value = lastW || '';
             document.getElementById('calc-cal').textContent = '0';
             document.getElementById('calc-protein').textContent = '0';
             document.getElementById('calc-carbs').textContent = '0';
             document.getElementById('calc-fat').textContent = '0';
+            if (lastW) calcNutrition();
 
             // 根据当前时间自动选择餐次
             var hour = new Date().getHours();
@@ -1752,8 +1847,8 @@
             else if (hour >= 14 && hour < 20) autoMeal = 'dinner';
             else if (hour >= 20 || hour < 6) autoMeal = 'snack';
 
-            // 设置餐次按钮
-            var pills = document.querySelectorAll('.meal-pill');
+            // 设置餐次按钮（只作用于添加面板内的餐次，不干扰其他切换按钮）
+            var pills = document.querySelectorAll('#weight-panel .meal-pill');
             for (var i = 0; i < pills.length; i++) {
                 pills[i].classList.remove('active');
                 if (pills[i].getAttribute('data-meal') === autoMeal) {
@@ -1826,6 +1921,7 @@
             var mealType = activeMealPill ? activeMealPill.getAttribute('data-meal') : 'other';
             var mealTime = document.getElementById('meal-time-input').value || '';
             var targetDate = document.getElementById('meal-date-input').value || getToday();
+            var editContextWasEdit = !!editContext;
 
             var entry;
             if (editContext) {
@@ -1863,19 +1959,28 @@
             logs.push(entry);
             saveLogs(targetDate, logs);
 
+            // 记住这次用的克重（库内食物），下次自动带出
+            if (!editContext && entry.weight) saveLastWeight(entry.name, entry.weight);
+
             // 关闭面板并刷新首页
             closeWeightPanel();
             renderHome();
 
             if (targetDate === getToday()) {
-                // 切换到首页查看结果
-                var pages = document.querySelectorAll('.page');
-                for (var i = 0; i < pages.length; i++) pages[i].classList.remove('active');
-                document.getElementById('page-home').classList.add('active');
-                document.getElementById('page-title').textContent = '今日饮食';
-                var navItems = document.querySelectorAll('.nav-item');
-                for (var i = 0; i < navItems.length; i++) navItems[i].classList.remove('active');
-                navItems[0].classList.add('active');
+                if (editContextWasEdit) {
+                    // 编辑：回首页
+                    var pages = document.querySelectorAll('.page');
+                    for (var i = 0; i < pages.length; i++) pages[i].classList.remove('active');
+                    document.getElementById('page-home').classList.add('active');
+                    document.getElementById('page-title').textContent = '今日饮食';
+                    var navItems = document.querySelectorAll('.nav-item');
+                    for (var i = 0; i < navItems.length; i++) navItems[i].classList.remove('active');
+                    navItems[0].classList.add('active');
+                } else {
+                    // 新记录：留在添加页，显示撤销条，方便连续添加
+                    renderAddPage();
+                    showUndoBar('已添加 ' + entry.name + ' ' + entry.weight + 'g', targetDate, logs.length - 1);
+                }
             } else {
                 // 补记/改到别的日期：跳到历史页展示那一天
                 var pages = document.querySelectorAll('.page');
@@ -1890,6 +1995,28 @@
                 renderHistory();
                 showHistoryDetail(targetDate);
             }
+        }
+
+        // 撤销条：显示刚刚添加的记录，可一键撤销
+        function showUndoBar(msg, date, index) {
+            var bar = document.getElementById('undo-bar');
+            if (!bar) return;
+            bar.innerHTML = '<span>' + msg + '</span><button onclick="undoLastAdd(\'' + date + '\', ' + index + ')">撤销</button>';
+            bar.style.display = 'flex';
+            clearTimeout(window._undoTimer);
+            window._undoTimer = setTimeout(hideUndoBar, 8000);
+        }
+        function hideUndoBar() {
+            var bar = document.getElementById('undo-bar');
+            if (bar) { bar.style.display = 'none'; bar.innerHTML = ''; }
+        }
+        function undoLastAdd(date, index) {
+            var logs = getLogs(date);
+            logs.splice(index, 1);
+            saveLogs(date, logs);
+            hideUndoBar();
+            renderHome();
+            renderAddPage();
         }
 
         // ============================================
@@ -1934,6 +2061,17 @@
             if (!name) {
                 alert('请输入食物名称');
                 return;
+            }
+
+            // 营养一致性校验：热量 vs 4/4/9 换算（标签取整/膳食纤维会引入偏差，只提示不阻止）
+            if (calories > 0) {
+                var expected = protein * 4 + carbs * 4 + fat * 9;
+                var diff = Math.abs(calories - expected);
+                if (diff > 50 && diff / calories > 0.35) {
+                    if (!confirm('提示：填写的三大营养素按 4/4/9 换算约 ' + Math.round(expected) + ' kcal，与热量 ' + calories + ' kcal 相差较多。\n\n请确认是按「每' + baseWeight + 'g」填写的营养数据。仍要保存吗？')) {
+                        return;
+                    }
+                }
             }
 
             // 生成唯一 id（用时间戳）
@@ -2153,6 +2291,7 @@
                     html += '      <div class="library-item-detail">蛋白质' + f.protein + 'g · 碳水' + f.carbs + 'g · 脂肪' + f.fat + 'g</div>';
                     html += '    </div>';
                     html += '    <span class="library-item-cal">每' + f.baseWeight + 'g: ' + f.calories + ' kcal</span>';
+                    html += '    <span class="fav-star' + (f.fav ? ' on' : '') + '" onclick="toggleFav(' + f.id + ', event)">' + (f.fav ? '★' : '☆') + '</span>';
                     html += '  </div>';
                     html += '  <div class="library-item-actions">';
                     html += '    <button class="library-btn library-btn-edit" onclick="editFood(' + f.id + ')">编辑</button>';
