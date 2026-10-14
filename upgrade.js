@@ -445,19 +445,71 @@
   }
 
   // ---------- 训练页 ----------
-  var STRENGTH_CATS = ['胸', '背', '肩', '腿', '核心', '综合'];
-  var CARDIO_CATS = ['跑步', '游泳', '羽毛球', '骑行', '其他'];
+  var STRENGTH_CATS = ['胸', '背', '肩', '手臂', '腿', '核心', '综合'];
+  var CARDIO_CATS = ['跑步', '游泳', '羽毛球', '骑行', '快走', '爬山', '跳绳', 'HIIT', '瑜伽', '篮球', '足球', '网球', '乒乓球', '拳击', '舞蹈', '划船', '其他'];
+  var WORKOUT_EMOJI = {
+    '胸': '💪', '背': '🧗', '肩': '🏋️', '手臂': '🦾', '腿': '🦵', '核心': '🧘', '综合': '🤸',
+    '跑步': '🏃', '游泳': '🏊', '羽毛球': '🏸', '骑行': '🚴', '快走': '🚶', '爬山': '🥾',
+    '跳绳': '🪢', 'HIIT': '🔥', '瑜伽': '🧘', '篮球': '🏀', '足球': '⚽', '网球': '🎾',
+    '乒乓球': '🏓', '拳击': '🥊', '舞蹈': '💃', '划船': '🚣', '其他': '🤸'
+  };
+  function workoutEmoji(x) {
+    return WORKOUT_EMOJI[x.category] || (x.kind === 'cardio' ? '🏃' : '🏋️');
+  }
+  // 内置训练动作库：选部位后可直接下拉选动作，也支持手动输入
+  var EXERCISE_DB = {
+    '胸': ['杠铃卧推', '哑铃卧推', '上斜卧推', '哑铃飞鸟', '双杠臂屈伸', '俯卧撑', '绳索夹胸', '器械推胸'],
+    '背': ['引体向上', '高位下拉', '杠铃划船', '坐姿划船', '硬拉', '单臂哑铃划船', '直臂下压', '面拉'],
+    '肩': ['哑铃推举', '杠铃推举', '侧平举', '前平举', '俯身飞鸟', '面拉', '阿诺德推举', '反向蝴蝶机'],
+    '手臂': ['杠铃弯举', '哑铃弯举', '锤式弯举', '集中弯举', '绳索下压', '颈后臂屈伸', '窄距卧推', '仰卧臂屈伸'],
+    '腿': ['深蹲', '腿举', '罗马尼亚硬拉', '箭步蹲', '保加利亚分腿蹲', '腿弯举', '腿屈伸', '臀桥', '小腿提踵'],
+    '核心': ['平板支撑', '卷腹', '悬垂举腿', '俄罗斯转体', '健腹轮', '侧平板支撑', '死虫式', '登山跑'],
+    '综合': ['硬拉', '深蹲', '波比跳', '壶铃摆动', '农夫行走', '战绳', '药球砸地']
+  };
+  function updateExList() {
+    var sel = document.getElementById('du-wcat');
+    var dl = document.getElementById('du-exlist');
+    if (!sel || !dl) return;
+    var list = EXERCISE_DB[sel.value] || [];
+    dl.innerHTML = list.map(function (e) { return '<option value="' + e + '">'; }).join('');
+  }
+  function workoutDesc(x) {
+    return x.kind === 'cardio'
+      ? [x.duration ? x.duration + ' min' : '', x.distance ? x.distance + ' km' : '', x.heartRate ? '心率 ' + x.heartRate : '', x.note].filter(Boolean).join(' · ')
+      : [x.exercise, x.weight ? x.weight + 'kg' : '', x.reps ? x.reps + '次' : '', x.sets ? x.sets + '组' : '', x.rpe ? 'RPE ' + x.rpe : '', x.duration ? x.duration + ' min' : '', x.note].filter(Boolean).join(' · ');
+  }
+  // 按天归档：[{ date, items:[{rec, idx}] }]，日期倒序
+  function groupWorkoutsByDay(logs) {
+    var days = {};
+    logs.forEach(function (x, i) {
+      var d = x.date || '未知日期';
+      if (!days[d]) days[d] = [];
+      days[d].push({ rec: x, idx: i });
+    });
+    return Object.keys(days).sort().reverse().map(function (d) { return { date: d, items: days[d] }; });
+  }
+
   var workoutKind = 'strength';
+  var workoutDayView = null;  // 非 null 表示正在查看某一天的归档
+  var workoutFormDate = '';   // 补记入口预选的日期
 
   function renderWorkout() {
+    if (workoutDayView) { renderWorkoutDayDetail(workoutDayView); return; }
+
     var logs = workoutLogs();
     var wstats = weekWorkoutStats();
     var cardioSummary = Object.keys(wstats.cardio).map(function (k) { return k + ' ' + wstats.cardio[k] + '次'; }).join(' · ') || '0次';
 
+    // 切换力量/有氧重绘时保留已选日期
+    var existingDate = document.getElementById('du-wdate') ? document.getElementById('du-wdate').value : '';
+    var formDate = workoutFormDate || existingDate || today();
+    workoutFormDate = '';
+
     var strengthForm =
-      '<div class="du-row"><select id="du-wcat" class="du-input">' +
+      '<div class="du-row"><select id="du-wcat" class="du-input" onchange="window.DietUpgrade.updateExList()">' +
         STRENGTH_CATS.map(function (c) { return '<option>' + c + '</option>'; }).join('') + '</select></div>' +
-      '<div class="du-row"><input id="du-wex" type="text" placeholder="动作（如：卧推，可留空）"></div>' +
+      '<div class="du-row"><input id="du-wex" type="text" list="du-exlist" placeholder="动作（下拉选择或直接输入，可留空）">' +
+      '<datalist id="du-exlist"></datalist></div>' +
       '<div class="du-row"><input id="du-wkg" type="number" step="0.5" inputmode="decimal" placeholder="重量 kg">' +
       '<input id="du-wreps" type="number" placeholder="次数">' +
       '<input id="du-wsets" type="number" placeholder="组数"></div>' +
@@ -473,11 +525,13 @@
       '<div class="du-row"><input id="du-whr" type="number" placeholder="平均心率（可选）">' +
       '<input id="du-wnote" type="text" placeholder="备注（可留空）"></div>';
 
+    var days = groupWorkoutsByDay(logs).slice(0, 30);
+
     document.getElementById('du-workout-content').innerHTML =
       '<h2 style="margin-bottom:4px">训练</h2>' +
       '<div class="du-card"><b>本周</b>' +
         '<p style="margin-top:6px">力量 <b>' + wstats.strength + '</b> 次 · 有氧 ' + esc(cardioSummary) + '</p>' +
-        '<p class="du-muted">共 ' + logs.length + ' 次训练记录</p>' +
+        '<p class="du-muted">共 ' + logs.length + ' 次训练记录 · ' + days.length + ' 个训练日</p>' +
       '</div>' +
 
       '<div class="du-card"><b>添加训练</b>' +
@@ -486,22 +540,61 @@
           '<div class="du-pill' + (workoutKind === 'cardio' ? ' active' : '') + '" onclick="window.DietUpgrade.setWorkoutKind(\'cardio\')">有氧</div>' +
         '</div>' +
         (workoutKind === 'strength' ? strengthForm : cardioForm) +
+        '<div class="du-row"><input id="du-wdate" type="date" value="' + formDate + '"></div>' +
         '<button class="du-btn" onclick="window.DietUpgrade.addWorkout()">保存训练</button>' +
-        '<p class="du-muted" style="margin-top:6px">除了类型，其他字段都可以留空。最简单的记录如「胸，60分钟」也可以。</p>' +
+        '<p class="du-muted" style="margin-top:6px">除了类型，其他字段都可以留空。日期默认今天，改日期即可补记之前的训练。</p>' +
       '</div>' +
 
-      '<div class="du-card"><b>训练历史</b><ul class="du-list">' +
-        (logs.slice(-30).reverse().map(function (x) {
-          var realIdx = logs.indexOf(x);
-          var desc = x.kind === 'cardio'
-            ? [x.duration ? x.duration + ' min' : '', x.distance ? x.distance + ' km' : '', x.heartRate ? '心率 ' + x.heartRate : '', x.note].filter(Boolean).join(' · ')
-            : [x.exercise, x.weight ? x.weight + 'kg' : '', x.reps ? x.reps + '次' : '', x.sets ? x.sets + '组' : '', x.rpe ? 'RPE ' + x.rpe : '', x.duration ? x.duration + ' min' : '', x.note].filter(Boolean).join(' · ');
-          return '<li style="display:flex;justify-content:space-between;align-items:center">' +
-            '<span><b>' + esc(x.date) + '</b> · ' + esc(x.category || x.type || '') +
-            (desc ? '<br><span class="du-muted">' + esc(desc) + '</span>' : '') + '</span>' +
-            '<button class="du-del" onclick="window.DietUpgrade.delWorkout(' + realIdx + ')">删除</button></li>';
+      '<div class="du-card"><b>训练历史（按天归档）</b><ul class="du-list">' +
+        (days.map(function (d) {
+          var cats = d.items.map(function (it) { return workoutEmoji(it.rec) + ' ' + esc(it.rec.category || it.rec.type || ''); }).join(' · ');
+          return '<li onclick="window.DietUpgrade.openWorkoutDay(\'' + d.date + '\')" style="cursor:pointer">' +
+            '<b>' + esc(d.date) + '</b> <span class="du-muted">' + d.items.length + ' 项 ›</span><br>' +
+            '<span class="du-muted">' + cats + '</span></li>';
         }).join('') || '<li class="du-muted">还没有训练记录</li>') +
       '</ul></div>';
+    updateExList();
+  }
+
+  // 某一天的训练归档详情
+  function renderWorkoutDayDetail(date) {
+    var logs = workoutLogs();
+    var items = [];
+    logs.forEach(function (x, i) { if (x.date === date) items.push({ rec: x, idx: i }); });
+    if (!items.length) { workoutDayView = null; renderWorkout(); return; }
+
+    var totalMin = 0, totalKm = 0;
+    items.forEach(function (it) {
+      if (it.rec.duration) totalMin += it.rec.duration;
+      if (it.rec.distance) totalKm += it.rec.distance;
+    });
+    var summaryBits = [];
+    if (totalMin) summaryBits.push('总时长 ' + totalMin + ' 分钟');
+    if (totalKm) summaryBits.push('总距离 ' + (Math.round(totalKm * 10) / 10) + ' km');
+
+    document.getElementById('du-workout-content').innerHTML =
+      '<button class="du-btn" style="background:#f0f0f0;color:#333" onclick="window.DietUpgrade.backToWorkoutDays()">← 返回训练历史</button>' +
+      '<h2 style="margin:10px 0 4px">' + esc(date) + '</h2>' +
+      '<p class="du-muted">共 ' + items.length + ' 项训练' + (summaryBits.length ? ' · ' + summaryBits.join(' · ') : '') + '</p>' +
+      '<div class="du-card"><ul class="du-list">' +
+        items.map(function (it) {
+          var x = it.rec;
+          var desc = workoutDesc(x);
+          return '<li style="display:flex;justify-content:space-between;align-items:center">' +
+            '<span>' + workoutEmoji(x) + ' <b>' + esc(x.category || x.type || '') + '</b>' +
+            (desc ? '<br><span class="du-muted">' + esc(desc) + '</span>' : '') + '</span>' +
+            '<button class="du-del" onclick="window.DietUpgrade.delWorkout(' + it.idx + ')">删除</button></li>';
+        }).join('') +
+      '</ul></div>' +
+      '<button class="du-btn" onclick="window.DietUpgrade.backfillWorkoutDay(\'' + date + '\')">＋ 补记这一天的训练</button>';
+  }
+
+  function openWorkoutDay(date) { workoutDayView = date; renderWorkout(); }
+  function backToWorkoutDays() { workoutDayView = null; renderWorkout(); }
+  function backfillWorkoutDay(date) {
+    workoutDayView = null;
+    workoutFormDate = date;
+    renderWorkout();
   }
 
   function setWorkoutKind(k) { workoutKind = k; renderWorkout(); }
@@ -509,7 +602,7 @@
   function addWorkout() {
     var logs = workoutLogs();
     var rec = {
-      date: today(),
+      date: (document.getElementById('du-wdate') && document.getElementById('du-wdate').value) || today(),
       kind: workoutKind,
       category: document.getElementById('du-wcat').value
     };
@@ -529,6 +622,8 @@
     }
     logs.push(rec);
     write(KEY.workouts, logs);
+    // 补记到别的日期时，直接展示那一天的归档
+    workoutDayView = (rec.date !== today()) ? rec.date : null;
     renderWorkout();
   }
   function delWorkout(idx) {
@@ -536,7 +631,7 @@
     var logs = workoutLogs();
     logs.splice(idx, 1);
     write(KEY.workouts, logs);
-    renderWorkout();
+    renderWorkout(); // 当天删空后会自动回到归档列表
   }
 
   // ---------- 更多页 ----------
@@ -813,7 +908,8 @@
     go: duSwitch,
     setDayType: setDayType,
     addBody: addBody, editBody: editBody, delBody: delBody,
-    setWorkoutKind: setWorkoutKind, addWorkout: addWorkout, delWorkout: delWorkout,
+    setWorkoutKind: setWorkoutKind, addWorkout: addWorkout, delWorkout: delWorkout, updateExList: updateExList,
+    openWorkoutDay: openWorkoutDay, backToWorkoutDays: backToWorkoutDays, backfillWorkoutDay: backfillWorkoutDay,
     saveProfile: saveProfile,
     toggleCreatine: toggleCreatine,
     exportData: exportData, exportCSV: exportCSV, importData: importData,

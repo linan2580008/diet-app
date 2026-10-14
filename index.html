@@ -1044,11 +1044,54 @@
 
             <!-- 添加 -->
             <div class="page" id="page-add">
-                <div class="search-box">
-                    <input type="text" id="add-search" placeholder="搜索食物..." oninput="renderAddPage()">
+                <div class="meal-pills" style="margin-bottom:10px">
+                    <button class="meal-pill active" id="add-mode-lib" onclick="switchAddMode('lib')">🍎 食物库</button>
+                    <button class="meal-pill" id="add-mode-quick" onclick="switchAddMode('quick')">✍️ 手动输入</button>
                 </div>
-                <div id="add-food-list"></div>
-                <button class="create-food-btn" onclick="openCreatePanel()">＋ 创建新食物</button>
+                <div id="library-add-panel">
+                    <div class="search-box">
+                        <input type="text" id="add-search" placeholder="搜索食物..." oninput="renderAddPage()">
+                    </div>
+                    <div id="add-food-list"></div>
+                    <button class="create-food-btn" onclick="openCreatePanel()">＋ 创建新食物</button>
+                </div>
+                <div id="quick-add-panel" style="display:none">
+                    <p class="empty-msg" style="text-align:left;margin:0 0 10px">适合复杂的一餐：先用 AI 估算好热量和营养，直接把结果填进来。</p>
+                    <div class="meal-time-group">
+                        <label>这餐吃了什么（必填）</label>
+                        <input type="text" id="qa-name" placeholder="如：麻辣烫 一份">
+                    </div>
+                    <div class="meal-time-group">
+                        <label>热量 kcal（必填）</label>
+                        <input type="number" id="qa-cal" inputmode="decimal" placeholder="如：650">
+                    </div>
+                    <div class="meal-time-group">
+                        <label>蛋白质 g（可留空）</label>
+                        <input type="number" id="qa-protein" inputmode="decimal" placeholder="可留空">
+                    </div>
+                    <div class="meal-time-group">
+                        <label>碳水 g（可留空）</label>
+                        <input type="number" id="qa-carbs" inputmode="decimal" placeholder="可留空">
+                    </div>
+                    <div class="meal-time-group">
+                        <label>脂肪 g（可留空）</label>
+                        <input type="number" id="qa-fat" inputmode="decimal" placeholder="可留空">
+                    </div>
+                    <div class="meal-type-group">
+                        <label>这一餐是</label>
+                        <div class="meal-pills">
+                            <button class="meal-pill" data-meal="breakfast" onclick="selectQaMeal(this)">早餐</button>
+                            <button class="meal-pill" data-meal="lunch" onclick="selectQaMeal(this)">午餐</button>
+                            <button class="meal-pill" data-meal="dinner" onclick="selectQaMeal(this)">晚餐</button>
+                            <button class="meal-pill active" data-meal="snack" onclick="selectQaMeal(this)">加餐</button>
+                        </div>
+                    </div>
+                    <div class="meal-time-group">
+                        <label>记录到哪一天（补记可改日期）</label>
+                        <input type="date" id="qa-date">
+                    </div>
+                    <button class="add-confirm-btn" onclick="saveQuickAdd()">保存记录</button>
+                </div>
             </div>
 
             <!-- 食物库 -->
@@ -1439,7 +1482,7 @@
                         html += '<div class="food-log-item">';
                         html += '  <div class="food-log-info">';
                         html += '    <div class="food-log-name">' + log.name + '</div>';
-                        html += '    <div class="food-log-detail">' + log.weight + 'g · 蛋白质' + log.protein.toFixed(1) + 'g · 碳水' + log.carbs.toFixed(1) + 'g · 脂肪' + log.fat.toFixed(1) + 'g</div>';
+                        html += '    <div class="food-log-detail">' + (log.weight ? log.weight + 'g · ' : '') + '蛋白质' + log.protein.toFixed(1) + 'g · 碳水' + log.carbs.toFixed(1) + 'g · 脂肪' + log.fat.toFixed(1) + 'g</div>';
                         html += '  </div>';
                         html += '  <span class="food-log-cal">' + Math.round(log.calories) + 'kcal</span>';
                         html += '  <button class="food-log-edit" onclick="editLog(getToday(), ' + idx + ')">✎</button>';
@@ -1497,7 +1540,8 @@
 
             document.getElementById('weight-food-name').textContent = log.name;
             document.getElementById('weight-food-info').textContent = '修改这条记录（重量、餐次、时间、日期都可以改）';
-            document.getElementById('weight-input').value = log.weight;
+            // 手动输入的记录没有重量，编辑时按 1 份处理，数值保持不变
+            document.getElementById('weight-input').value = log.weight || 1;
             calcNutrition();
 
             // 餐次
@@ -1554,6 +1598,90 @@
         //  添加食物页
         // ============================================
         var selectedFood = null; // 当前选中的食物
+
+        // 切换「食物库 / 手动输入」模式
+        function switchAddMode(mode) {
+            var lib = document.getElementById('library-add-panel');
+            var qa = document.getElementById('quick-add-panel');
+            var bl = document.getElementById('add-mode-lib');
+            var bq = document.getElementById('add-mode-quick');
+            if (mode === 'quick') {
+                lib.style.display = 'none';
+                qa.style.display = 'block';
+                bq.classList.add('active');
+                bl.classList.remove('active');
+                document.getElementById('qa-date').value = getToday();
+            } else {
+                lib.style.display = 'block';
+                qa.style.display = 'none';
+                bl.classList.add('active');
+                bq.classList.remove('active');
+            }
+        }
+
+        // 手动输入面板的餐次选择
+        function selectQaMeal(btn) {
+            var pills = document.querySelectorAll('#quick-add-panel .meal-pill');
+            for (var i = 0; i < pills.length; i++) pills[i].classList.remove('active');
+            btn.classList.add('active');
+        }
+
+        // 保存手动输入的记录（复杂一餐直接填热量和营养）
+        function saveQuickAdd() {
+            var name = document.getElementById('qa-name').value.trim();
+            var cal = parseFloat(document.getElementById('qa-cal').value);
+            if (!name) { alert('请填写这餐吃了什么'); return; }
+            if (!cal || cal <= 0) { alert('请填写热量'); return; }
+            var date = document.getElementById('qa-date').value || getToday();
+            var mealBtn = document.querySelector('#quick-add-panel .meal-pill.active');
+
+            var logs = getLogs(date);
+            logs.push({
+                name: name,
+                weight: 0,
+                custom: true,
+                calories: Math.round(cal * 10) / 10,
+                protein: parseFloat(document.getElementById('qa-protein').value) || 0,
+                carbs: parseFloat(document.getElementById('qa-carbs').value) || 0,
+                fat: parseFloat(document.getElementById('qa-fat').value) || 0,
+                mealType: mealBtn ? mealBtn.getAttribute('data-meal') : 'other',
+                mealTime: ''
+            });
+            saveLogs(date, logs);
+
+            // 清空表单，方便连续记录
+            document.getElementById('qa-name').value = '';
+            document.getElementById('qa-cal').value = '';
+            document.getElementById('qa-protein').value = '';
+            document.getElementById('qa-carbs').value = '';
+            document.getElementById('qa-fat').value = '';
+
+            renderHome();
+            if (date === getToday()) {
+                // 回首页看结果
+                var pages = document.querySelectorAll('.page');
+                for (var i = 0; i < pages.length; i++) pages[i].classList.remove('active');
+                document.getElementById('page-home').classList.add('active');
+                document.getElementById('page-title').textContent = '今日饮食';
+                var navItems = document.querySelectorAll('.nav-item');
+                for (var i = 0; i < navItems.length; i++) navItems[i].classList.remove('active');
+                navItems[0].classList.add('active');
+            } else {
+                // 补记到别的日期：跳历史页展示那一天
+                var pages = document.querySelectorAll('.page');
+                for (var i = 0; i < pages.length; i++) pages[i].classList.remove('active');
+                document.getElementById('page-history').classList.add('active');
+                document.getElementById('page-title').textContent = '历史记录';
+                var navItems = document.querySelectorAll('.nav-item');
+                for (var i = 0; i < navItems.length; i++) {
+                    navItems[i].classList.remove('active');
+                    if (navItems[i].getAttribute('data-page') === 'history') navItems[i].classList.add('active');
+                }
+                renderHistory();
+                showHistoryDetail(date);
+            }
+        }
+
 
         // 渲染添加页的食物列表
         function renderAddPage() {
@@ -1945,7 +2073,7 @@
                         html += '<div class="food-log-item">';
                         html += '  <div class="food-log-info">';
                         html += '    <div class="food-log-name">' + log.name + '</div>';
-                        html += '    <div class="food-log-detail">' + log.weight + 'g · 蛋白质' + log.protein.toFixed(1) + 'g · 碳水' + log.carbs.toFixed(1) + 'g · 脂肪' + log.fat.toFixed(1) + 'g</div>';
+                        html += '    <div class="food-log-detail">' + (log.weight ? log.weight + 'g · ' : '') + '蛋白质' + log.protein.toFixed(1) + 'g · 碳水' + log.carbs.toFixed(1) + 'g · 脂肪' + log.fat.toFixed(1) + 'g</div>';
                         html += '  </div>';
                         html += '  <span class="food-log-cal">' + Math.round(log.calories) + 'kcal</span>';
                         html += '  <button class="food-log-edit" onclick="editLog(\'' + date + '\', ' + idx + ')">✎</button>';
